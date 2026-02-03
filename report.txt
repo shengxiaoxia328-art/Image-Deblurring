@@ -1,0 +1,129 @@
+Image Deblurring and QR Factorizations - Report
+Li Lu
+121090272
+1 Kernel Implementation and Image Blurring
+Two set of kernels are set following the format:
+Blurred images are created following the linear system below
+Four pairs of original images and blurred images:
+2 Analysis of the Deblurring Problem
+Notice that is already an upper triangular matrix, while has subdiagonal entries, which possibly makes its conditional
+number very large, leading to the unstability and inaccuracy for solving the linear system.
+Observations for :
+
+k \ n 256 512 1024 2048
+24 6.4994e+12 1.5240e+17 2.6645e+17 8.2926e+16
+36 8.9135e+09 1.8527e+16 3.4650e+17 3.5760e+17
+100 6.8499e+07 4.2795e+09 1.4875e+14 2.8909e+17
+From the table above, we can see that cond(A_r) varies with different matrix size and number of diagonals . Generally, we
+have
+increases as increases. Thus, as the image size grows, it may become harder to deblur it.
+roughly decreases as increases. Thus, images blurred by kernels with larger , deblurring ususally becomes easier.
+decreases faster as increases for smaller . Thus, the effects of deblurring varies greater for image with smaller sizes.
+3 Image Deblurring by Builtin LU and QR functions
+We only need to decompose and then solve the linear system or .
+1 from numpy.linalg import pinv
+2 from scipy.linalg import lu, qr
+3
+4 def recover_by_LU(B, Al, Ar, lu_func=lu):
+5 _, Lr, Ur = lu_func(Ar, permute_l=False)
+6 X_rec = pinv(Al) @ B @ pinv(Ur) @ pinv(Lr)
+7 return np.clip(X_rec, 0, 1)
+8
+9 def recover_by_QR(B, Al, Ar, qr_func=qr):
+10 Qr, Rr = qr_func(Ar, pivoting=False)
+11 X_rec = pinv(Al) @ B @ pinv(Rr) @ Qr.T
+12 return np.clip(X_rec, 0, 1)
+4 Householder QR Decomposition
+Codes for householder QR decomposition without column permutation are shown below: (Unfortunately, the version with
+column permutation does not work well for deblurring.)
+1 def my_qr(A, pivoting=False):
+2 '''Householder QR decomposition (without column pivoting)'''
+3 m, n = A.shape
+4 Q = np.eye(m)
+5 R = np.copy(A)
+6
+7 for j in range(n):
+8 v = R[j:, j].copy()
+9
+10 v[0] = v[0] + np.sign(v[0]) * norm(v) * v[0]
+
+11 v = v / norm(v)
+12 H = np.eye(len(v)) - 2 * np.outer(v, v)
+13
+14 H_full = np.eye(m)
+15 H_full[j:, j:] = H
+16 R = H_full @ R
+17 Q = Q @ H_full.T
+18 return Q, R[:n, :]
+5 Potential Improvements and Other Methods
+5.1 Least Square Formulation
+Instead of solving the linear system, we can consider solve the problem by considering the least square formluation below:
+1 from scipy.linalg import lstsq
+2
+3 def recover_by_lstsq(B, Al, Ar):
+4 Y, _, _, _ = lstsq(Al, B)
+5 X_rec_t, _, _, _ = lstsq(Ar.T, Y.T)
+6 X_rec = X_rec_t.T
+7 return np.clip(X_rec, 0, 1)
+5.2 Solve by Pure Psudo-Inverse
+Though is ill-conditioned, we may still consider solving the linear system by computing its (Moore-Penrose) pseudo-inverse
+and analyze the performance.
+1 from numpy.linalg import pinv
+2 def recover_by_pure_pinv(B, Al, Ar):
+3 X_rec = pinv(Al) @ B @ pinv(Ar)
+4 return np.clip(X_rec, 0, 1)
+5.3 Padding to Make it Diagonal
+After obtaining , we can consider solving the linear system
+to get , where and are obtained by padding and . This system is expanded as
+
+Assuming , we can assign values for in by estimating following the formular
+1 def recover_by_pad(B, Al, Ar):
+2 Y = pinv(Al) @ B
+3
+4 Y = np.pad(Y, ((0,1), (1,0)), mode='constant')
+5 Y[:-1, 0] = Y[:-1, 1] / (Ar[0,0] + Ar[1,0])
+6
+7 Ar = np.pad(Ar, ((0,1), (1,0)), mode='constant')
+8 Ar[0,0] = 1; Ar[-1,-1] = 1
+9
+10 X_rec = (Y @ pinv(Ar))[:-1, :-1]
+11 return np.clip(X_rec, 0, 1)
+6 Results of Deblurring by Six Methods
+6.1 256_hand
+
+6.2 512_ducks
+
+7 Comparison among Six Methods and Discussions
+In this project, six methods are tested on four images deblurred by two sets of kernels. Deblurred results for the last two
+images are shown in the appendix.
+We consider three metrics to evaluate the efficiency of these six methods. Good methods are those with less execution time,
+high PSNR, and low (log) relative forward error (using the Frobenius norm). Below shows the metrics comparison:
+Observations and discussions
+As the image size increases, the excution time increases dramatically, especially for the my_qr method (self-
+implemented Householder decomposition). The padding method requires least execution time, since it needs no
+decomposition for . While the pure psudo-inverse method does not involve matrix decomposition, computing the
+(Moore-Penrose) pseudo-inverse of the non-triangular matrix requires more time for computing that of the
+triangular matrix .
+
+On all images, the builtin LU method performs worst considering both PSNR and relative forward error. This is due to
+the instability of LU decomposition compared to QR decomposition especially for ill-conditioned matrices.
+The least squares method and the builtin QR method show similar performance on very large images, though the
+latter one requires less execution time.
+Though the padding method requires least execution time, it is not recommended for deblurring small-sized images, as
+the estimation error of one column is non-negligible.
+It must be admitted that the pure psudo-inverse method performs well. If the padding method is unpractical when the
+explicit form of blurring kernels is not given, it is one of the optimal choice for deblurring.
+The my_qr method gives exactly the same PSNR and relative forward error as the builting QR method, since these two
+essentially do the same operations. However, since the latter one is highly accelerated by more efficient codes
+(implemented by different programming language), it requires much less execution time.
+Overall, for small-sized images, pure psudo-inverse method and least squares method, are preferred; for larger images,
+the padding method is optimal.
+As analyzed for in section 2, the performance of different methods varies slightly for kernels with
+and when is small, and is nearly the same for large .
+8 Appendix: Results for "1024_books" and "2048_mountain"
+8.1 1024_books
+
+8.2 2048_mountain
+
+
+
